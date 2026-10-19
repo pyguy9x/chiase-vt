@@ -1,0 +1,22 @@
+{
+  "name": "zalo-to-tele",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dashboard": "node dashboard.js",
+    "sovb": "node sovb-server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "firebase-admin": "^14.5.0",
+    "telegraf": "^4.16.3",
+    "zca-js": "^2.2.0"
+  }
+}
