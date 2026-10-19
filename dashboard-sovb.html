@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sổ VB đi — Dòng cuối realtime</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --new: #fbbf24;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", Tahoma, sans-serif; padding: 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  h1 { font-size: 1.3rem; }
+  h1 span { color: var(--accent); }
+  #status { font-size: .85rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; }
+  #dot.on { background: #22c55e; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+
+  #toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  #toolbar input, #toolbar select, #btn-clear {
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 8px 12px; font-size: .85rem; outline: none;
+    font-family: inherit;
+  }
+  #toolbar input { flex: 1; min-width: 220px; }
+  #toolbar input::placeholder { color: var(--muted); }
+  #toolbar input:focus, #toolbar select:focus { border-color: var(--accent); }
+  #btn-clear { cursor: pointer; background: #334155; }
+  #btn-clear:hover { background: #475569; }
+  #stats { font-size: .85rem; color: var(--muted); margin-bottom: 14px; }
+
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-left-width: 4px; border-radius: 12px; padding: 14px 16px; transition: all .3s; }
+  .card.flash { border-color: var(--new); border-left-color: var(--new); box-shadow: 0 0 14px rgba(251,191,36,.35); }
+  .card h2 { font-size: .85rem; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .card h2 .row { color: var(--muted); font-weight: normal; }
+  .new-badge { font-size: .65rem; background: var(--new); color: #1e293b; border-radius: 4px; padding: 1px 6px; margin-left: 6px; display: none; }
+  .card.flash .new-badge { display: inline-block; }
+  .f { display: flex; gap: 8px; font-size: .9rem; margin: 4px 0; line-height: 1.45; }
+  .f b { color: var(--muted); min-width: 78px; font-weight: 600; flex-shrink: 0; font-size: .82rem; padding-top: 1px; }
+  .noi-dung { font-weight: 500; }
+  .empty { grid-column: 1/-1; text-align: center; color: var(--muted); padding: 40px; }
+  mark { background: rgba(251,191,36,.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📄 Sổ Văn bản Đi <span>— dòng cuối mỗi sheet</span></h1>
+  <div id="status"><div id="dot"></div><span id="status-text">Đang kết nối…</span></div>
+</header>
+
+<div id="toolbar">
+  <input id="search" type="search" placeholder="🔍 Tìm số ký hiệu, nội dung, người ký…">
+  <select id="f-sheet"><option value="">Tất cả sheet</option></select>
+  <select id="f-ky"><option value="">Mọi người ký</option></select>
+  <button id="btn-clear">Xóa lọc</button>
+</div>
+
+<div id="stats"></div>
+<div id="grid"><div class="empty">Chưa có dữ liệu, chờ server quét…</div></div>
+
+<script>
+const grid = document.getElementById("grid");
+const dot = document.getElementById("dot");
+const statusText = document.getElementById("status-text");
+const stats = document.getElementById("stats");
+const searchInput = document.getElementById("search");
+const fSheet = document.getElementById("f-sheet");
+const fKy = document.getElementById("f-ky");
+const btnClear = document.getElementById("btn-clear");
+
+const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+let known = new Set(); // (tenSheet|soKH) đã hiển thị
+let allItems = [];     // dữ liệu đầy đủ từ server, lọc diễn ra trên đây
+
+// ---------- Màu theo tên sheet (ổn định giữa các lần render) ----------
+function colorFor(name) {
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${h}, 72%, 62%)`;
+}
+
+// ---------- Hiển thị từ khóa tìm kiếm ----------
+function highlight(text, q) {
+  const safe = esc(text);
+  if (!q) return safe;
+  try { return safe.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>"); }
+  catch { return safe; }
+}
+
+function cardHTML(it, isNew, q) {
+  const col = colorFor(it.tenSheet);
+  return `<div class="card${isNew ? " flash" : ""}" style="border-left-color:${col}">
+    <h2 style="color:${col}">${esc(it.tenSheet)}<span class="new-badge">MỚI</span><span class="row">#${it.row}</span></h2>
+    <div class="f"><b>Thời gian</b><span>${highlight(it.thoiGian, q) || "—"}</span></div>
+    <div class="f"><b>Số KH</b><span><strong>${highlight(it.soKH, q) || "—"}</strong></span></div>
+    <div class="f"><b>Nội dung</b><span class="noi-dung">${highlight(it.noiDung, q) || "—"}</span></div>
+    <div class="f"><b>Ký</b><span>${highlight(it.ky, q) || "—"}</span></div>
+    <div class="f"><b>Gửi</b><span>${highlight(it.gui, q) || "—"}</span></div>
+  </div>`;
+}
+
+function buildFilters(items) {
+  const uniq = (v) => v && v.trim();
+  const sheets = [...new Set(items.map((i) => i.tenSheet))].sort((a, b) => a.localeCompare(b, "vi"));
+  const kys = [...new Set(items.map((i) => uniq(i.ky)))].filter(Boolean).sort((a, b) => a.localeCompare(b, "vi"));
+  const keepSel = (sel, opts, allLabel) => {
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">${allLabel}</option>` + opts.map((o) => `<option>${esc(o)}</option>`).join("");
+    if (opts.includes(cur)) sel.value = cur; // giữ lựa chọn khi data reload
+  };
+  keepSel(fSheet, sheets, "Tất cả sheet");
+  keepSel(fKy, kys, "Mọi người ký");
+}
+
+function currentFilters() {
+  return {
+    q: searchInput.value.trim().toLowerCase(),
+    sheet: fSheet.value,
+    ky: fKy.value,
+  };
+}
+
+function applyFilters() {
+  const { q, sheet, ky } = currentFilters();
+  const hit = (v) => String(v || "").toLowerCase().includes(q);
+  let items = allItems;
+  if (sheet) items = items.filter((i) => i.tenSheet === sheet);
+  if (ky) items = items.filter((i) => (i.ky || "").trim() === ky);
+  if (q) items = items.filter((i) => hit(i.tenSheet) || hit(i.thoiGian) || hit(i.soKH) || hit(i.noiDung) || hit(i.ky) || hit(i.gui));
+
+  if (!allItems.length) {
+    grid.innerHTML = `<div class="empty">Chưa có dữ liệu, chờ server quét…</div>`;
+    stats.textContent = "";
+    return;
+  }
+  if (!items.length) {
+    grid.innerHTML = `<div class="empty">Không có sheet nào khớp bộ lọc</div>`;
+    stats.textContent = `0/${allItems.length} sheet khớp lọc`;
+    return;
+  }
+  const lastSheet = {};
+  for (const it of items) lastSheet[it.tenSheet] = lastSheet[it.tenSheet] || it; // giữ sheet xuất hiện trước (thứ tự dữ liệu)
+  grid.innerHTML = items
+    .map((it) => {
+      const isNew = !known.has(`${it.tenSheet}|${it.soKH}`);
+      known.add(`${it.tenSheet}|${it.soKH}`);
+      return cardHTML(it, isNew, q);
+    })
+    .join("");
+  stats.innerHTML = `${items.length}/${allItems.length} sheet${q || sheet || ky ? " khớp lọc" : ""} · cập nhật: ${new Date().toLocaleTimeString("vi-VN")}`;
+  setTimeout(() => document.querySelectorAll(".card.flash").forEach((c) => c.classList.remove("flash")), 5000);
+}
+
+function render(items = []) {
+  allItems = items;
+  buildFilters(items);
+  applyFilters();
+}
+
+// ---------- Sự kiện bộ lọc ----------
+searchInput.addEventListener("input", applyFilters);
+fSheet.addEventListener("change", applyFilters);
+fKy.addEventListener("change", applyFilters);
+btnClear.addEventListener("click", () => {
+  searchInput.value = "";
+  fSheet.value = "";
+  fKy.value = "";
+  applyFilters();
+  searchInput.focus();
+});
+
+async function init() {
+  try {
+    const r = await fetch("/api/latest");
+    const d = await r.json();
+    render(d.items || []);
+  } catch { statusText.textContent = "Không lấy được dữ liệu ban đầu"; }
+}
+
+function connectSSE() {
+  const es = new EventSource("/api/stream");
+  es.onopen = () => { dot.classList.add("on"); statusText.textContent = "Realtime (SSE) — đã kết nối"; };
+  es.onerror = () => {
+    dot.classList.remove("on");
+    statusText.textContent = "Mất kết nối — thử lại sau 5s";
+    es.close();
+    setTimeout(connectSSE, 5000);
+  };
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if ((d.type === "update" || d.type === "hello") && d.items) render(d.items);
+    } catch {}
+  };
+}
+
+init();
+connectSSE();
+</script>
+</body>
+</html>
